@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fourmeme 交易數據分析</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 10px;
+            max-width: 1000px;
+            margin-left: auto;
+            margin-right: auto;
+            font-size: 14px;
+            background-color: #1e1e1e; /* 深灰背景 */
+            color: #e0e0e0; /* 淺灰文字 */
+        }
+        h1 {
+            text-align: center;
+            font-size: 1.5em;
+            margin: 10px 0;
+            color: #ffffff; /* 白色標題 */
+        }
+        h2 {
+            text-align: center;
+            font-size: 1.2em;
+            margin: 10px 0;
+            color: #ffffff;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 10px 0;
+        }
+        th, td {
+            border: 1px solid #444; /* 暗色邊框 */
+            padding: 5px;
+            text-align: center;
+            font-size: 0.9em;
+            color: #e0e0e0;
+        }
+        th {
+            background-color: #333; /* 深灰表格頭 */
+        }
+        canvas {
+            margin: 10px 0;
+            max-width: 100%;
+            height: 200px;
+            background-color: #2a2a2a; /* 圖表背景 */
+        }
+        .section {
+            margin-bottom: 20px;
+        }
+        input[type="file"] {
+            margin: 10px 0;
+            font-size: 0.9em;
+            color: #e0e0e0;
+            background-color: #333;
+            border: 1px solid #444;
+            padding: 5px;
+        }
+        .flex-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .flex-section {
+            flex: 1;
+            min-width: 300px;
+        }
+        /* 第二橫排寬度比例 3:1 */
+        .hourly-section {
+            flex: 3;
+        }
+        .daily-section {
+            flex: 1;
+            min-width: 200px;
+        }
+        /* 第三橫排：每小時增加速率圖表寬度與 hourly-section 一致 */
+        .hourly-rate-section {
+            flex: 3;
+        }
+        .placeholder-section {
+            flex: 1;
+            min-width: 200px;
+            visibility: hidden; /* 空白占位欄位不可見 */
+        }
+        @media (max-width: 768px) {
+            .flex-container {
+                flex-direction: column;
+            }
+            .flex-section, .hourly-section, .daily-section, .hourly-rate-section, .placeholder-section {
+                flex: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Fourmeme 交易數據分析</h1>
+    <input type="file" id="csvFile" accept=".csv" onchange="loadCSV()">
+    
+    <div class="section">
+        <table>
+            <tr>
+                <th>總共 TX 數</th>
+                <th>總共帳號數</th>
+            </tr>
+            <tr>
+                <td id="totalTx">0</td>
+                <td id="totalAccounts">0</td>
+            </tr>
+        </table>
+    </div>
+    
+    <!-- 第一橫排：TX 數區間分析 和 帳號總交易量區間分析 -->
+    <div class="flex-container">
+        <div class="flex-section">
+            <h2>TX 數區間分析</h2>
+            <canvas id="txChart"></canvas>
+            <table>
+                <tr>
+                    <th>區間 (BNB)</th>
+                    <th>TX 數</th>
+                </tr>
+                <tbody id="txTable"></tbody>
+            </table>
+        </div>
+        
+        <div class="flex-section">
+            <h2>帳號總交易量區間分析</h2>
+            <canvas id="accountChart"></canvas>
+            <table>
+                <tr>
+                    <th>區間 (BNB)</th>
+                    <th>帳號數</th>
+                </tr>
+                <tbody id="accountTable"></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- 第二橫排：每小時累積地址數（折線圖） 和 每天累積地址數（表格） -->
+    <div class="flex-container">
+        <div class="hourly-section">
+            <h2>每小時累積地址數分析</h2>
+            <canvas id="hourlyChart"></canvas>
+        </div>
+        
+        <div class="daily-section">
+            <h2>每天累積地址數分析</h2>
+            <table>
+                <tr>
+                    <th>日期</th>
+                    <th>累積地址數</th>
+                </tr>
+                <tbody id="dailyTable"></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- 第三橫排：每小時增加速率（折線圖） + 空白占位 -->
+    <div class="flex-container">
+        <div class="hourly-rate-section">
+            <h2>每小時增加速率分析</h2>
+            <canvas id="hourlyRateChart"></canvas>
+        </div>
+        <div class="placeholder-section"></div>
+    </div>
+
+    <script>
+        // 區間定義
+        const ranges = [
+            { label: "0.01-0.015", min: 0.01, max: 0.015 },
+            { label: "0.015-0.05", min: 0.015, max: 0.05 },
+            { label: "0.05-0.1", min: 0.05, max: 0.1 },
+            { label: "0.1-0.2", min: 0.1, max: 0.2 },
+            { label: "0.2-0.5", min: 0.2, max: 0.5 },
+            { label: "0.5-1", min: 0.5, max: 1 },
+            { label: "1以上", min: 1, max: Infinity }
+        ];
+
+        // 解析 CSV 文件
+        function loadCSV() {
+            const fileInput = document.getElementById('csvFile');
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            Papa.parse(file, {
+                header: true,
+                complete: function(results) {
+                    processData(results.data);
+                },
+                error: function(error) {
+                    console.error("CSV 解析錯誤:", error);
+                }
+            });
+        }
+
+        // 處理數據
+        function processData(data) {
+            // 過濾無效數據
+            data = data.filter(row => 
+                row.address && 
+                row.value && !isNaN(parseFloat(row.value)) && 
+                row.timestamp && !isNaN(parseInt(row.timestamp))
+            );
+
+            // 按時間戳排序
+            data.sort((a, b) => parseInt(a.timestamp) - parseInt(b.timestamp));
+
+            // 總 TX 數
+            const totalTx = data.length;
+            document.getElementById('totalTx').textContent = totalTx;
+
+            // 按地址加總 value
+            const addressSums = {};
+            data.forEach(row => {
+                const address = row.address;
+                const value = parseFloat(row.value);
+                addressSums[address] = (addressSums[address] || 0) + value;
+            });
+
+            // 總帳號數（唯一地址）
+            const totalAccounts = Object.keys(addressSums).length;
+            document.getElementById('totalAccounts').textContent = totalAccounts;
+
+            // TX 數區間分析
+            const txCounts = ranges.map(range => ({
+                label: range.label,
+                count: data.filter(row => {
+                    const value = parseFloat(row.value);
+                    return value > range.min && value <= range.max;
+                }).length
+            }));
+
+            // 帳號總交易量區間分析
+            const accountCounts = ranges.map(range => ({
+                label: range.label,
+                count: Object.values(addressSums).filter(sum => sum > range.min && sum <= range.max).length
+            }));
+
+            // 每小時累積地址數 和 每小時增加速率
+            const hourlyCounts = [];
+            const hourlyRateCounts = [];
+            const seenAddresses = new Set();
+            let currentHour = null;
+            let previousCount = 0;
+            data.forEach(row => {
+                const timestamp = parseInt(row.timestamp) * 1000; // 轉為毫秒
+                const date = new Date(timestamp);
+                const hourKey = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')} ${String(date.getUTCHours()).padStart(2, '0')}:00`;
+                
+                if (hourKey !== currentHour) {
+                    if (currentHour !== null) {
+                        hourlyCounts.push({ hour: currentHour, count: seenAddresses.size });
+                        hourlyRateCounts.push({ hour: currentHour, count: seenAddresses.size - previousCount });
+                        previousCount = seenAddresses.size;
+                    }
+                    currentHour = hourKey;
+                }
+                seenAddresses.add(row.address);
+            });
+            // 添加最後一小時
+            if (currentHour !== null) {
+                hourlyCounts.push({ hour: currentHour, count: seenAddresses.size });
+                hourlyRateCounts.push({ hour: currentHour, count: seenAddresses.size - previousCount });
+            }
+
+            // 每天累積地址數
+            const dailyCounts = [];
+            const seenAddressesDaily = new Set();
+            let currentDay = null;
+            data.forEach(row => {
+                const timestamp = parseInt(row.timestamp) * 1000; // 轉為毫秒
+                const date = new Date(timestamp);
+                const dayKey = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+                
+                if (dayKey !== currentDay) {
+                    if (currentDay !== null) {
+                        dailyCounts.push({ day: currentDay, count: seenAddressesDaily.size });
+                    }
+                    currentDay = dayKey;
+                }
+                seenAddressesDaily.add(row.address);
+            });
+            // 添加最後一天
+            if (currentDay !== null) {
+                dailyCounts.push({ day: currentDay, count: seenAddressesDaily.size });
+            }
+
+            // 更新 TX 表格
+            const txTable = document.getElementById('txTable');
+            txTable.innerHTML = txCounts.map(row => `
+                <tr>
+                    <td>${row.label}</td>
+                    <td>${row.count}</td>
+                </tr>
+            `).join('');
+
+            // 更新帳號表格
+            const accountTable = document.getElementById('accountTable');
+            accountTable.innerHTML = accountCounts.map(row => `
+                <tr>
+                    <td>${row.label}</td>
+                    <td>${row.count}</td>
+                </tr>
+            `).join('');
+
+            // 更新每天表格
+            const dailyTable = document.getElementById('dailyTable');
+            dailyTable.innerHTML = dailyCounts.map(row => `
+                <tr>
+                    <td>${row.day}</td>
+                    <td>${row.count}</td>
+                </tr>
+            `).join('');
+
+            // 繪製 TX 圖表
+            new Chart(document.getElementById('txChart'), {
+                type: 'bar',
+                data: {
+                    labels: ranges.map(r => r.label),
+                    datasets: [{
+                        label: 'TX 數',
+                        data: txCounts.map(c => c.count),
+                        backgroundColor: 'rgba(75, 192, 192, 0.5)', /* 青色柱狀 */
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: { beginAtZero: true, grid: { color: '#444' }, ticks: { color: '#e0e0e0' } },
+                        x: { grid: { display: false }, ticks: { color: '#e0e0e0' } }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+
+            // 繪製帳號圖表
+            new Chart(document.getElementById('accountChart'), {
+                type: 'bar',
+                data: {
+                    labels: ranges.map(r => r.label),
+                    datasets: [{
+                        label: '帳號數',
+                        data: accountCounts.map(c => c.count),
+                        backgroundColor: 'rgba(255, 99, 132, 0.5)', /* 粉色柱狀 */
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: { beginAtZero: true, grid: { color: '#444' }, ticks: { color: '#e0e0e0' } },
+                        x: { grid: { display: false }, ticks: { color: '#e0e0e0' } }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+
+            // 繪製每小時累積地址數折線圖（不顯示 X 軸標籤）
+            new Chart(document.getElementById('hourlyChart'), {
+                type: 'line',
+                data: {
+                    labels: hourlyCounts.map(c => c.hour),
+                    datasets: [{
+                        label: '累積地址數',
+                        data: hourlyCounts.map(c => c.count),
+                        backgroundColor: 'rgba(54, 162, 235, 0.5)', /* 藍色折線 */
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 2,
+                        fill: false,
+                        tension: 0.1 // 折線平滑度
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: { 
+                            beginAtZero: true, 
+                            grid: { color: '#444' }, 
+                            ticks: { color: '#e0e0e0' } 
+                        },
+                        x: { 
+                            grid: { display: false }, 
+                            ticks: { display: false } // 隱藏 X 軸標籤
+                        }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+
+            // 繪製每小時增加速率折線圖（不顯示 X 軸標籤）
+            new Chart(document.getElementById('hourlyRateChart'), {
+                type: 'line',
+                data: {
+                    labels: hourlyRateCounts.map(c => c.hour),
+                    datasets: [{
+                        label: '每小時增加速率',
+                        data: hourlyRateCounts.map(c => c.count),
+                        backgroundColor: 'rgba(54, 162, 235, 0.5)', /* 藍色折線 */
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 2,
+                        fill: false,
+                        tension: 0.1 // 折線平滑度
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: { 
+                            beginAtZero: true, 
+                            grid: { color: '#444' }, 
+                            ticks: { color: '#e0e0e0' } 
+                        },
+                        x: { 
+                            grid: { display: false }, 
+                            ticks: { display: false } // 隱藏 X 軸標籤
+                        }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+    </script>
+</body>
+</html>
