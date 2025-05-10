@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jager.meme 空投領取工具 ($JAGER)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/5.7.2/ethers.umd.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            font-size: 12px;
+            line-height: 1.5;
+            margin: 0;
+            padding: 20px;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+        }
+        .container {
+            max-width: 800px;
+            margin: auto;
+            padding: 20px;
+            background-color: #2c2c2c;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+        }
+        h2, h3 {
+            margin: 10px 0;
+            color: #ffffff;
+        }
+        input, button {
+            width: 100%;
+            margin: 5px 0;
+            padding: 10px;
+            font-size: 12px;
+            box-sizing: border-box;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background-color: #333;
+            color: #e0e0e0;
+        }
+        input::placeholder {
+            color: #888;
+        }
+        button {
+            background-color: #1e90ff;
+            color: #fff;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #1c86ee;
+        }
+        .small-button {
+            width: auto;
+            padding: 5px 10px;
+            display: inline-block;
+        }
+        .flex-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .wallet-list-container {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #444;
+            margin-top: 10px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            border: 1px solid #444;
+            padding: 8px;
+            text-align: center;
+            font-size: 12px;
+            color: #e0e0e0;
+        }
+        th {
+            background-color: #3a3a3a;
+        }
+        .status {
+            font-size: 14px;
+            margin-top: 10px;
+        }
+        .error {
+            color: #ff5555;
+        }
+        .success {
+            color: #55ff55;
+        }
+        .log {
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #444;
+            padding: 10px;
+            background-color: #222;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Jager.meme 空投領取工具 ($JAGER)</h2>
+        <h3>導入錢包</h3>
+        <div class="flex-row">
+            <label for="csvFile">導入 CSV (.csv)</label>
+            <input type="file" id="csvFile" accept=".csv">
+            <button class="small-button" onclick="downloadTemplate()">📄 下載範本</button>
+        </div>
+
+        <h3>錢包列表</h3>
+        <div class="flex-row">
+            <label><input type="checkbox" id="selectAllWallets" onclick="toggleAllWallets()"> 全選</label>
+            <button class="small-button" onclick="selectWalletsWithAmountGreaterThanOne()">選擇金額 > 1</button>
+        </div>
+        <div class="wallet-list-container">
+            <table id="walletTable">
+                <thead>
+                    <tr>
+                        <th>選擇</th>
+                        <th>錢包地址</th>
+                        <th>BNB 餘額</th>
+                        <th>領取金額</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <h3>交易設置</h3>
+        <input type="text" id="targetAddress" placeholder="目標合約地址" value="0x1fa096b63e347cf9d14ba18f89b8dcccb504cedf">
+        <input type="text" id="apiCookie" placeholder="Jager.meme API Cookie (可選)">
+        <div class="flex-row">
+            <button class="small-button" onclick="startTransactions()">🚀 開始領取</button>
+            <button class="small-button" onclick="stopTransactions()">⛔ 停止領取</button>
+        </div>
+
+        <h3>狀態: <span id="status" class="status">待機</span></h3>
+        <div id="log" class="log"></div>
+    </div>
+
+    <script>
+        const provider = new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/');
+        const FIXED_GAS_PRICE = ethers.utils.parseUnits('1', 'gwei');
+        let wallets = [];
+        let isRunning = false;
+
+        // 下載 CSV 範本
+        function downloadTemplate() {
+            const template = 'privateKey\n0xYourPrivateKeyHere';
+            const blob = new Blob([template], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'template.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // 處理 CSV 導入
+        document.getElementById('csvFile').addEventListener('change', async (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                try {
+                    const lines = e.target.result.split('\n').slice(1); // 跳過標頭
+                    wallets = [];
+                    for (const line of lines) {
+                        const [privateKey] = line.split(',').map(s => s.trim());
+                        if (!privateKey) continue;
+
+                        // 驗證私鑰
+                        let wallet;
+                        try {
+                            wallet = new ethers.Wallet(privateKey, provider);
+                        } catch (error) {
+                            logMessage(`無效私鑰: ${privateKey.slice(0, 6)}...`, 'error');
+                            continue;
+                        }
+
+                        // 查詢 BNB 餘額
+                        const bnbBalance = await provider.getBalance(wallet.address);
+                        const bnbBalanceEth = ethers.utils.formatEther(bnbBalance);
+
+                        // 查詢領取資格
+                        let amount = '0';
+                        try {
+                            const bountyData = await queryBounty(wallet.address);
+                            amount = bountyData?.data?.amount || '0';
+                        } catch (error) {
+                            logMessage(`查詢領取資格失敗 (${wallet.address}): ${error.message}`, 'error');
+                        }
+
+                        wallets.push({ privateKey, address: wallet.address, bnbBalance: bnbBalanceEth, amount });
+                    }
+                    updateWalletTable();
+                    logMessage('✅ CSV 導入成功', 'success');
+                } catch (error) {
+                    logMessage(`CSV 導入失敗: ${error.message}`, 'error');
+                }
+            };
+            reader.readAsText(file);
+        });
+
+        // 更新錢包表格
+        function updateWalletTable() {
+            const tableBody = document.getElementById('walletTable').querySelector('tbody');
+            tableBody.innerHTML = '';
+            wallets.forEach((wallet, index) => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td><input type="checkbox" class="walletCheckbox" data-index="${index}"></td>
+                    <td>${wallet.address}</td>
+                    <td>${parseFloat(wallet.bnbBalance).toFixed(4)} BNB</td>
+                    <td>${wallet.amount} JAGER</td>
+                `;
+                tableBody.appendChild(row);
+            });
+        }
+
+        // 全選錢包
+        function toggleAllWallets() {
+            const checkboxes = document.querySelectorAll('.walletCheckbox');
+            const selectAll = document.getElementById('selectAllWallets').checked;
+            checkboxes.forEach(cb => cb.checked = selectAll);
+        }
+
+        // 選擇領取金額 > 1 的錢包
+        function selectWalletsWithAmountGreaterThanOne() {
+            const checkboxes = document.querySelectorAll('.walletCheckbox');
+            checkboxes.forEach(cb => {
+                const index = cb.dataset.index;
+                const wallet = wallets[index];
+                cb.checked = parseFloat(wallet.amount) > 1;
+            });
+            document.getElementById('selectAllWallets').checked = false; // 取消全選狀態
+        }
+
+        // 查詢合約是否有效
+        async function isValidContract(address) {
+            try {
+                const code = await provider.getCode(address);
+                return code !== '0x' && code !== '0x0';
+            } catch (error) {
+                logMessage(`檢查合約地址 ${address} 失敗: ${error.message}`, 'error');
+                return false;
+            }
+        }
+
+        // 格式化地址
+        function formatAddress(address) {
+            return '000000000000000000000000' + address.slice(2).toLowerCase();
+        }
+
+        // 格式化數值
+        function formatNumber(value, decimals = 0) {
+            const hex = ethers.utils.hexlify(ethers.utils.parseUnits(value.toString(), decimals)).slice(2);
+            return '0'.repeat(64 - hex.length) + hex;
+        }
+
+        // 查詢領取資格
+        async function queryBounty(address) {
+            const apiCookie = document.getElementById('apiCookie').value;
+            const headers = {
+                'accept': 'application/json, text/plain, */*',
+                'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+                'content-type': 'application/json'
+            };
+            if (apiCookie) headers['cookie'] = apiCookie;
+
+            try {
+                const response = await fetch(`https://api.jager.meme/api/jagerFour/queryBounty/${address}`, {
+                    method: 'GET',
+                    headers
+                });
+                const data = await response.json();
+                if (data.code !== 200) throw new Error(data.message || 'API 請求失敗');
+                if (!data.data || !data.data.amount || !data.data.proof || !Array.isArray(data.data.proof)) {
+                    throw new Error('無效的 API 回應格式');
+                }
+                return data;
+            } catch (error) {
+                throw new Error(`查詢領取資格失敗: ${error.message}`);
+            }
+        }
+
+        // 生成 claim 交易的 calldata
+        function generateClaimCalldata(amount, proof) {
+            const functionSelector = '0x2f52ebb7'; // claim(address,uint256,bytes32[])
+            const addressParam = '0'.repeat(64); // 全零地址，假設 msg.sender
+            const amountParam = formatNumber(amount, 18); // 假設 18 個小數位
+            const proofLength = formatNumber(proof.length);
+            const proofParams = proof.map(p => p.slice(2).toLowerCase()).join('');
+            return functionSelector + amountParam + formatNumber(0x40) + proofLength + proofParams;
+        }
+
+        // 發送 claim 交易
+        async function sendClaimTransaction(wallet, targetAddress, amount, proof) {
+            try {
+                const isContract = await isValidContract(targetAddress);
+                if (!isContract) throw new Error(`無效合約地址: ${targetAddress}`);
+
+                const calldata = generateClaimCalldata(amount, proof);
+                const tx = {
+                    to: targetAddress,
+                    value: 0,
+                    data: calldata,
+                    gasLimit: 223458, // 固定 gas limit
+                    gasPrice: FIXED_GAS_PRICE
+                };
+
+                const txResponse = await wallet.sendTransaction(tx);
+                logMessage(`Claim 交易發送: ${txResponse.hash}`, 'success');
+                const receipt = await txResponse.wait();
+                logMessage(`Claim 交易確認: 區塊 ${receipt.blockNumber}`, 'success');
+                return receipt;
+            } catch (error) {
+                logMessage(`Claim 交易失敗 (${wallet.address}): ${error.message}`, 'error');
+                return null;
+            }
+        }
+
+        // 開始交易
+        async function startTransactions() {
+            if (isRunning) return;
+            isRunning = true;
+            document.getElementById('status').innerText = '運行中...';
+
+            const selectedWallets = wallets.filter((_, index) => document.querySelector(`.walletCheckbox[data-index="${index}"]`).checked);
+            if (selectedWallets.length === 0) {
+                logMessage('⚠️ 請選擇至少一個錢包', 'error');
+                stopTransactions();
+                return;
+            }
+
+            const targetAddress = document.getElementById('targetAddress').value;
+            if (!ethers.utils.isAddress(targetAddress)) {
+                logMessage('⚠️ 無效目標合約地址', 'error');
+                stopTransactions();
+                return;
+            }
+
+            for (const walletData of selectedWallets) {
+                if (!isRunning) break;
+
+                const wallet = new ethers.Wallet(walletData.privateKey, provider);
+                logMessage(`處理錢包: ${wallet.address}`, 'success');
+
+                // 驗證 BNB 餘額
+                const bnbBalance = await provider.getBalance(wallet.address);
+                const bnbBalanceEth = ethers.utils.formatEther(bnbBalance);
+                if (parseFloat(bnbBalanceEth) < 0.001) {
+                    logMessage(`錢包 ${wallet.address} BNB 餘額不足: ${bnbBalanceEth} < 0.001`, 'error');
+                    continue;
+                }
+
+                // 查詢領取資格
+                let bountyData;
+                try {
+                    bountyData = await queryBounty(wallet.address);
+                    if (!bountyData.data.amount || bountyData.data.amount === '0') {
+                        logMessage(`錢包 ${wallet.address} 無領取資格`, 'error');
+                        continue;
+                    }
+                } catch (error) {
+                    logMessage(`查詢領取資格失敗 (${wallet.address}): ${error.message}`, 'error');
+                    continue;
+                }
+
+                // 發送 claim 交易
+                const receipt = await sendClaimTransaction(wallet, targetAddress, bountyData.data.amount, bountyData.data.proof);
+                if (receipt) {
+                    logMessage(`錢包 ${wallet.address} 領取完成`, 'success');
+                }
+            }
+
+            stopTransactions();
+        }
+
+        // 停止交易
+        function stopTransactions() {
+            isRunning = false;
+            document.getElementById('status').innerText = '已暫停';
+            logMessage('交易已停止', 'success');
+        }
+
+        // 日誌輸出
+        function logMessage(message, type = '') {
+            const logDiv = document.getElementById('log');
+            const p = document.createElement('p');
+            p.className = type;
+            p.innerText = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logDiv.appendChild(p);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+    </script>
+</body>
+</html>
